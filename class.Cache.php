@@ -16,7 +16,7 @@ class Cache {
 
     public function writeCache($name, $content) {
       
-        $cacheFile = $this->CACHE_DIR.$name.$this->CACHE_EXT;
+        $cacheFile = cacheLocation($name);
         $file = fopen($cacheFile,'w');
         fwrite($file, $content);
         fclose($file);
@@ -25,7 +25,7 @@ class Cache {
 
     public function readCache($name) {
     
-        $cacheFile = $this->CACHE_DIR.$name.$this->CACHE_EXT;
+        $cacheFile = cacheLocation($name);
         if (!file_exists($cacheFile)) { return null; }
         $content = file_get_contents(($cacheFile));
         return $content;
@@ -34,12 +34,32 @@ class Cache {
 
     public function needUpdate($name) {
     
-        $cacheFile = $this->CACHE_DIR.$name.$this->CACHE_EXT;
+        $cacheFile = cacheLocation($name);
         if (!file_exists($cacheFile)) { return true; }
         if (time() - filemtime($cacheFile) > $this->CACHE_LIFE) { return true; }
         return false;
     
     }
+
+    private function cleanName($name) {
+
+        $local = str_replace('https://', '', $name);
+        $local = str_replace('http://', '', $local);
+        $local = str_replace('www.', '', $local);
+        $local = str_replace('/', '_', $local);
+        $local = str_replace(' ', '_', $local);
+        return $name;
+
+    }
+
+    private function cacheLocation($name) {
+
+        $name = cleanName($name);
+        $cacheFile = $this->CACHE_DIR.$name.$this->CACHE_EXT;
+        return $cacheFile;
+
+    }
+
 }
 
 ?>
