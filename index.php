@@ -1,170 +1,198 @@
 <?php
 
-// Debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+    // Debugging
+    error_reporting(E_ALL);
+    ini_set('display_errors', 1);
 
-// Allow access for this API
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept');
-header('Cache-Control: no-cache, must-revalidate');
-header('Expires: ' . gmdate('D, d M Y H:i:s \G\M\T', time() + (60 * 60)));
-header('Content-type: application/json; charset=utf-8');
+    // Allow access for this API
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept');
+    header('Cache-Control: no-cache, must-revalidate');
+    header('Expires: ' . gmdate('D, d M Y H:i:s \G\M\T', time() + (60 * 60)));
+    header('Content-type: application/json; charset=utf-8');
 
-define('DEFAULT_LOCATION', 'Hasselt, Belgium'); // Default location when none is provided
-define('MONTHS_FUTURE', 3); // Display reservations this amount of months in the future
+    // Libaries
+    require_once('class.Cache.php');
+    require_once('class.Timer.php');
 
-// Libaries
-require_once('class.Cache.php');
-require_once('class.Timer.php');
+    // Init helper objects
+    $timer = new Timer();
+    $cache = new Cache();
 
-// Init helper objects
-$timer = new Timer();
-$cache = new Cache();
+    // Which calendars to index
+    $calendars = array(
+        'https://calendar.google.com/calendar/ical/timvervoort97%40gmail.com/private-63375787132677600264c7be24745d9a/basic.ics',
+        'https://uhcal.headr.be/calendars/ab2813e0-f867-11e8-a27a-6dbbb39c189e.ics'
+    );
 
-$calendars = array(); // Which calendars to index
+    $events = array(); // Stores all events
+    $bookings = array(); // Events to be displayed
 
-$events = array(); // Stores all events
-$bookings = array();
+    foreach ($calendars as $calendar) {
 
-foreach ($calendars as $calendar) {
+        // Create local cache name
+        $local = str_replace('https://', '', $calendar);
+        $local = str_replace('http://', '', $local);
+        $local = str_replace('www.', '', $local);
+        $local = str_replace('/', '_', $local);
+        $local = str_replace(' ', '_', $local);
 
-    // Retreive calendar and update cache
-    if ($cache->needUpdate($calendar) || isset($_REQUEST['forceUpdate'])) {
-        $ics = file_get_contents($calendar);
-        $cache->writeCache($calendar, $ics);
-    }
-    else {
-        $ics = $cache->readCache($local); // Read from cache
-    }
+        // Retreive calendar and update cache
+        if ($cache->needUpdate($local) || isset($_REQUEST['forceUpdate'])) {
+            $ics = file_get_contents($calendar);
+            $cache->writeCache($local, $ics);
+        }
+        else {
+            $ics = $cache->readCache($local); // Read from cache
+        }
 
-    // Get all events
-    $found = explode('BEGIN:VEVENT', $ics);
-    foreach ($found as $event) {
+        // Get all events
+        $found = explode('BEGIN:VEVENT', $ics);
+        foreach ($found as $event) {
 
-        // Copy valid events from iCal
-        if (strpos($event, 'SUMMARY') !== false) {
+            // Copy valid events from iCal
+            if (strpos($event, 'SUMMARY') !== false) {
 
-            $e = new stdClass();
-            $fields = explode("\r\n", $event);
-            foreach ($fields as $field) {
+                $e = new stdClass();
+                $fields = explode("\r\n", $event);
+                foreach ($fields as $field) {
 
-                if (strpos($field, ':') !== false) {
+                    if (strpos($field, ':') !== false) {
 
-                    $key = explode(':', $field)[0];
-                    $value = explode(':', $field)[1];
+                        $key = explode(':', $field)[0];
+                        $value = explode(':', $field)[1];
 
-                    if ($key == 'DTSTART') {
-                        $e->start = date('Y-m-d H:i:s', strtotime($value));
-                    }
-
-                    else if ($key == 'DTEND') {
-
-                        $e->end = date('Y-m-d H:i:s', strtotime($value));
-
-                        // Revert midnight new day back to just before midnight the previous day
-                        if (strpos($e->end, '00:00:00')) {
-                            $e->end = date("Y-m-d H:i:s", strtotime($e->end) - 1);
+                        if ($key == 'DTSTART') {
+                            $e->start = date('Y-m-d H:i:s', strtotime($value));
                         }
-                      
-                        if (date('Y-m-d H:i:s') > $e->end) { continue 2; } // Only events in the future, skip all fields and go to next event
 
-                    }
-                    else if ($key == 'SUMMARY') {
-                        $e->title = $value;
-                    }
-                    else if ($key == 'LOCATION') {
-                        $e->location = $value;
-                        if (empty($value)) {  $e->location = DEFAULT_LOCATION; }
+                        else if ($key == 'DTEND') {
+
+                            $e->end = date('Y-m-d H:i:s', strtotime($value));
+
+                            // Revert midnight new day back to just before midnight the previous day
+                            if (strpos($e->end, '00:00:00')) {
+                                $e->end = date("Y-m-d H:i:s", strtotime($e->end) - 1);
+                            }
+
+                            // Only events in the future
+                            if (date('Y-m-d H:i:s') > $e->end) {
+                                continue 2;
+                            }
+
+                        }
+
+                        else if ($key == 'SUMMARY') {
+                            $e->title = $value;
+                        }
+
+                        else if ($key == 'LOCATION') {
+                            $e->location = $value;
+                        }
+
                     }
                 }
+
+                if (empty($e->start) || empty($e->end)) {
+                    continue;
+                }
+
+                array_push($events, $e);
+            }
+        }
+
+    }
+
+    // Helper function to sort events by start date
+    function cmp($a, $b) {
+        if ($a->start == $b->start) {
+            return 0;
+        }
+        return ($a->start < $b->start) ? -1 : 1;
+    }
+
+    uasort($events, 'cmp'); // Order events chronological
+
+    // Get all dates in this month
+    function getDates($year, $month) {
+
+        global $bookings;
+        global $events;
+        global $monthNames;
+
+        for ($d = 1; $d <= 31; $d++) {
+
+            $availability = new stdClass();
+            $availability->date = date('Y-m-d', strtotime($year.'-'.$month.'-'.$d));
+            $t = strtotime($d.'-'.$month.'-'.$year);
+
+            // Between last monday & today, fill all
+            if ($t >= strtotime('monday this week') && $t < strtotime('now')) {
+
+                $p = new stdClass();
+                $p->start = date('Y-m-d H:i:s', $t);
+                $p->end = date('Y-m-d H:i:s', strtotime($d.'-'.$month.'-'.$year.' +23 hours 59 minutes 59 seconds'));
+                $p->title = '';
+                $availability->slots = array($p);
+                array_push($bookings, $availability);
+
             }
 
-            if (empty($e->start) || empty($e->end)) { continue; } // Not enough data, skip this element
+            // Today, create event until now
+            else if (date('m', $t) == $month && date('Y-m-d', $t) == date('Y-m-d')) {
+            
+                $p = new stdClass();
+                $p->start = date('Y-m-d H:i:s', $t);
+                $p->end = date('Y-m-d').' '.(date('H') + 1).':00:00'; // Find most nearby hour
 
-            array_push($events, $e);
+                $availability->slots = array($p);
+                $availability->slots = array_merge($availability->slots, findReservations($events, $availability->date));
+                array_push($bookings, $availability);
 
+            }
+
+            // Dates in the future
+            else if (date('m', $t) == $month && date('Y-m-d', $t) > date('Y-m-d')) { 
+
+                $availability->slots = findReservations($events, $availability->date);
+                array_push($bookings, $availability);
+
+            }
         }
     }
 
-}
-
-// Helper function to sort events by start date
-function cmp($a, $b) {
-
-    if ($a->start == $b->start) { return 0; }
-    return ($a->start < $b->start) ? -1 : 1;
-
-}
-
-uasort($events, 'cmp'); // Order events chronological
-
-function getDates($year, $month) {
-
-    global $bookings;
-    global $events;
-
-    if (date('m') >= 12) {
-        getDates(date('Y') + round($month / 12), $month % 12); // Wrap to next year
+    // Find reservations in events
+    function findReservations($events, $date) {
+        $found = array();
+        foreach ($events as $e) {
+            if (strpos($e->start, $date) !== false) {
+                array_push($found, $e);
+            }
+        }
+        return $found;
     }
 
-    for ($d = 1; $d <= 31; $d++) {
-
-        $time = mktime(12, 0, 0, $month, $d, $year);
-
-        if (date('m', $time) == $month && date('Y-m-d', $time) == date('Y-m-d')) { // Current day
-
-            $availability = new stdClass();
-            $availability->date = date('Y-m-d', strtotime($year.'-'.$month.'-'.$d));
-
-            $passed = new stdClass();
-            $passed->start = date('Y-m-d').' 00:00:00';
-
-            // Find next hour
-            $hour = date('H') + 1;
-            $passed->end = date('Y-m-d').' '.$hour.':00:00';
-            $availability->slots = array($passed);
-            $availability->slots = array_merge($availability->slots, findReservations($events, $availability->date));
-            array_push($bookings, $availability);
-
-        }
-
-        if (date('m', $time) == $month && date('Y-m-d', $time) > date('Y-m-d')) { // Day in the future
-
-            $availability = new stdClass();
-            $availability->date = date('Y-m-d', strtotime($year.'-'.$month.'-'.$d));
-            $availability->slots = findReservations($events, $availability->date);
-            array_push($bookings, $availability);
-
-        }
-
-    }
-}
-
-function findReservations($events, $date) {
-
-    $found = array();
-
-    foreach ($events as $e) {
-        if (strpos($e->start, $date) !== false) {
-            array_push($found, $e);
+    // Find reservations in the next $months months
+    function getNextMonths($year, $month, $months) {
+        $m = $month;
+        for ($i = 0; $i <= $months; $i++) {
+            if ($m > 12) {
+                $m = 1; // Revert to January
+                $year += 1; // Jump to next year
+            }
+            getDates($year, $m);
+            $m += 1;
         }
     }
 
-    return $found;
+    getNextMonths(date('Y'), date('m'), 3);
 
-}
+    $output = new stdClass();
+    $output->meta = new stdClass();
+    $output->meta->status = 'OK';
+    $output->meta->duration = $timer->getSeconds();
+    $output->data = $bookings;
 
-for ($i = 0; $i <= MONTHS_FUTURE; $i++) {
-    getDates(date('Y'), date('m') + $i);
-}
-
-$output = new stdClass();
-$output->meta = new stdClass();
-$output->meta->status = 'OK';
-$output->meta->duration = $timer->getSeconds();
-$output->data = $bookings;
-
-echo json_encode($output, JSON_PRETTY_PRINT);
+    echo json_encode($output, JSON_PRETTY_PRINT);
 
 ?>
